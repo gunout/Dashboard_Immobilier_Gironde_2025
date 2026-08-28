@@ -16,7 +16,6 @@ st.set_page_config(
 )
 
 # --- Dictionnaire des principales communes de Gironde ---
-# (Code INSEE -> Nom) - Non exhaustif, vous pouvez l'enrichir
 COMMUNES_GIRONDE = {
     "33063": "Bordeaux",
     "33069": "Bruges",
@@ -38,24 +37,21 @@ COMMUNES_GIRONDE = {
     "33522": "Arcachon",
     "33529": "La Teste-de-Buch",
     "33550": "Cestas",
-    # Ajoutez d'autres communes selon vos besoins
 }
-
-# Inverser le dictionnaire pour avoir Nom -> Code INSEE
 NOMS_COMMUNES_GIRONDE = {v: k for k, v in COMMUNES_GIRONDE.items()}
 
 # --- Fonction de chargement des données 2025 pour la Gironde ---
 @st.cache_data(ttl=3600)
 def load_gironde_2025_data():
     """
-    Charge les données DVF 2025 pour toutes les communes de Gironde
-    depuis le fichier départemental compressé
+    Charge les données DVF 2025 pour la Gironde
+    depuis le fichier départemental compressé sur data.gouv.fr
     """
     url = "https://files.data.gouv.fr/geo-dvf/latest/csv/2025/departements/33.csv.gz"
     
     try:
         with st.spinner("📥 Téléchargement des données DVF 2025 pour la Gironde..."):
-            response = requests.get(url, stream=True)
+            response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
         
         with st.spinner("🔄 Traitement des données..."):
@@ -82,10 +78,6 @@ def load_gironde_2025_data():
 
 # --- Fonction de nettoyage et préparation ---
 def prepare_data(df):
-    """
-    Nettoie et prépare les données pour l'analyse
-    Adapté pour la Gironde avec des seuils de prix appropriés
-    """
     if df.empty:
         return pd.DataFrame()
     
@@ -118,24 +110,22 @@ def prepare_data(df):
     
     # Filtrage des valeurs aberrantes pour la Gironde
     if 'valeur_fonciere' in df_clean.columns:
-        df_clean = df_clean[df_clean['valeur_fonciere'] > 20000]   # Min 20k€
-        df_clean = df_clean[df_clean['valeur_fonciere'] < 3000000] # Max 3M€
+        df_clean = df_clean[df_clean['valeur_fonciere'] > 20000]
+        df_clean = df_clean[df_clean['valeur_fonciere'] < 3000000]
     
     if 'surface_reelle_bati' in df_clean.columns:
-        df_clean = df_clean[df_clean['surface_reelle_bati'] > 9]    # Min 9m²
-        df_clean = df_clean[df_clean['surface_reelle_bati'] < 400]  # Max 400m²
+        df_clean = df_clean[df_clean['surface_reelle_bati'] > 9]
+        df_clean = df_clean[df_clean['surface_reelle_bati'] < 400]
     
     # Calcul du prix au m²
     if 'valeur_fonciere' in df_clean.columns and 'surface_reelle_bati' in df_clean.columns:
         df_clean['prix_m2'] = df_clean['valeur_fonciere'] / df_clean['surface_reelle_bati']
-        # Seuils adaptés au marché girondin
         df_clean = df_clean[(df_clean['prix_m2'] > 500) & (df_clean['prix_m2'] < 12000)]
     
     # Ajout du nom de commune
     if 'code_commune' in df_clean.columns:
         df_clean['code_commune'] = df_clean['code_commune'].astype(str).str.zfill(5)
         df_clean['nom_commune'] = df_clean['code_commune'].map(COMMUNES_GIRONDE)
-        # Conserver uniquement les communes que nous avons dans notre dictionnaire
         df_clean = df_clean.dropna(subset=['nom_commune'])
     
     return df_clean
@@ -153,7 +143,7 @@ if df_brut.empty:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📊 Utiliser les données 2024"):
-            st.switch_page("dashboard_gironde_2024.py")  # À créer
+            st.switch_page("dashboard_gironde_2024.py")  # À créer si besoin
     with col2:
         if st.button("🔄 Vérifier à nouveau"):
             st.rerun()
@@ -173,7 +163,7 @@ if df.empty:
         if 'code_commune' in df_brut.columns:
             st.write("Communes présentes dans les données brutes :")
             communes_presentes = df_brut['code_commune'].astype(str).str[:5].unique()
-            st.write(sorted(communes_presentes)[:20])  # Affiche les 20 premières
+            st.write(sorted(communes_presentes)[:20])
     st.stop()
 
 # --- Sélection de la commune ---
@@ -266,7 +256,6 @@ col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
     prix_m2_moyen = df_filtre['prix_m2'].mean()
-    delta_prix = None
     st.metric(
         "Prix moyen / m²", 
         f"{prix_m2_moyen:,.0f} €"
@@ -323,11 +312,25 @@ with col2:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte ---
+# --- Carte (CORRIGÉE) ---
 st.subheader(f"🗺️ Carte des transactions - {selected_commune_name}")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
-    df_carte = df_filtre.dropna(subset=['latitude', 'longitude'])
+    # Nettoyage robuste des coordonnées
+    df_carte = df_filtre.copy()
+    
+    # Convertir en numérique (remplace les virgules par des points si besoin)
+    df_carte['latitude'] = pd.to_numeric(
+        df_carte['latitude'].astype(str).str.replace(',', '.'), 
+        errors='coerce'
+    )
+    df_carte['longitude'] = pd.to_numeric(
+        df_carte['longitude'].astype(str).str.replace(',', '.'), 
+        errors='coerce'
+    )
+    
+    # Supprimer les lignes avec coordonnées manquantes
+    df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
     
     if not df_carte.empty:
         # Limiter à 500 points pour la performance
@@ -347,7 +350,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                 "surface_reelle_bati": ":.0f",
                 "prix_m2": ":.0f"
             },
-            color_continuous_scale="RdYlGn_r",  # Rouge (cher) à Vert (moins cher)
+            color_continuous_scale="RdYlGn_r",
             size_max=15,
             zoom=12,
             mapbox_style="open-street-map",
@@ -355,7 +358,9 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("📍 Données de géolocalisation non disponibles")
+        st.info("📍 Aucune transaction avec coordonnées valides après nettoyage.")
+else:
+    st.info("📍 Colonnes latitude/longitude non disponibles dans les données.")
 
 # --- Évolution temporelle ---
 st.subheader(f"📅 Évolution des transactions - {selected_commune_name}")
