@@ -1,4 +1,4 @@
-# dashboard_gironde_2025.py – Version finale corrigée pour Plotly 7
+# dashboard_gironde_2025.py – version finale avec scatter_geo
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,6 +6,13 @@ import requests
 import io
 import gzip
 from datetime import datetime
+
+# Optionnel : pour conversion Lambert 93 → WGS84 (si nécessaire)
+try:
+    import pyproj
+    HAS_PYPROJ = True
+except ImportError:
+    HAS_PYPROJ = False
 
 st.set_page_config(page_title="Dashboard Immobilier Gironde 2025", page_icon="🏘️", layout="wide")
 
@@ -28,7 +35,6 @@ def load_gironde_2025_data():
             response.raise_for_status()
         with st.spinner("🔄 Décompression et lecture..."):
             with gzip.open(io.BytesIO(response.content), 'rt', encoding='utf-8') as f:
-                # Lire l'en-tête pour sélectionner les colonnes existantes
                 first_line = f.readline()
                 header = first_line.strip().split(',')
                 f.seek(0)
@@ -50,7 +56,6 @@ def load_gironde_2025_data():
         return pd.DataFrame()
 
 def prepare_data(df):
-    """Nettoie et filtre les données"""
     if df.empty:
         return df
     df_clean = df.copy()
@@ -144,38 +149,46 @@ with col2:
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte avec auto-adaptation et fallback ---
+# --- Carte avec scatter_geo (robuste) ---
 st.subheader(f"🗺️ Carte des transactions - {selected}")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
-    # Nettoyage agressif des coordonnées
-    df_carte['latitude'] = pd.to_numeric(
-        df_carte['latitude'].astype(str).str.strip().str.replace(',', '.'),
-        errors='coerce'
-    )
-    df_carte['longitude'] = pd.to_numeric(
-        df_carte['longitude'].astype(str).str.strip().str.replace(',', '.'),
-        errors='coerce'
-    )
+    # Nettoyage des coordonnées
+    df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
+    df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
 
     if not df_carte.empty:
-        # Diagnostic : afficher les plages de coordonnées
-        with st.expander("🔍 Voir les plages de coordonnées (diagnostic)"):
-            st.write(f"Latitude : min {df_carte['latitude'].min():.4f}, max {df_carte['latitude'].max():.4f}")
-            st.write(f"Longitude : min {df_carte['longitude'].min():.4f}, max {df_carte['longitude'].max():.4f}")
-            if (abs(df_carte['latitude'].min()) > 90 or abs(df_carte['latitude'].max()) > 90 or
-                abs(df_carte['longitude'].min()) > 180 or abs(df_carte['longitude'].max()) > 180):
-                st.warning("⚠️ Les coordonnées semblent être en mètres (projection). La carte peut être décalée.")
+        # Diagnostic
+        lat_min, lat_max = df_carte['latitude'].min(), df_carte['latitude'].max()
+        lon_min, lon_max = df_carte['longitude'].min(), df_carte['longitude'].max()
+        with st.expander("🔍 Diagnostic coordonnées"):
+            st.write(f"Latitude : min {lat_min:.4f}, max {lat_max:.4f}")
+            st.write(f"Longitude : min {lon_min:.4f}, max {lon_max:.4f}")
+            if lat_max > 90 or lat_min < -90 or lon_max > 180 or lon_min < -180:
+                st.warning("⚠️ Coordonnées hors limites (probablement en mètres). Tentative de conversion Lambert 93 → WGS84.")
+                if HAS_PYPROJ:
+                    import pyproj
+                    lambert93 = pyproj.Proj('+proj=lcc +lat_1=49 +lat_2=44 +lat_0=46.5 +lon_0=3 +x_0=700000 +y_0=6600000 +ellps=GRS80 +units=m +no_defs')
+                    wgs84 = pyproj.Proj('+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+                    lon_vals = df_carte['longitude'].values
+                    lat_vals = df_carte['latitude'].values
+                    new_lon, new_lat = pyproj.transform(lambert93, wgs84, lon_vals, lat_vals)
+                    df_carte['longitude'] = new_lon
+                    df_carte['latitude'] = new_lat
+                    st.success("✅ Conversion effectuée.")
+                else:
+                    st.error("❌ pyproj non installé. Installez 'pyproj' dans requirements.txt")
 
+        # Limiter le nombre de points
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
 
+        # Création de la carte avec scatter_geo
         try:
-            # Essai avec scatter_map (Plotly 7)
-            fig = px.scatter_map(
+            fig = px.scatter_geo(
                 df_carte,
                 lat="latitude",
                 lon="longitude",
@@ -189,25 +202,22 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                 },
                 color_continuous_scale="RdYlGn_r",
                 size_max=15,
-                zoom=12,
-                map_style="carto-positron",
                 title=f"Transactions à {selected} (2025)"
             )
+            # Centrer sur la France (si les coordonnées sont en degrés)
+            if -10 < lon_min < 10 and 40 < lat_min < 50:
+                fig.update_geos(
+                    center=dict(lon=(lon_min+lon_max)/2, lat=(lat_min+lat_max)/2),
+                    projection_scale=4,
+                    showcountries=True,
+                    countrycolor="lightgray"
+                )
+            else:
+                # Si coordonnées en mètres, on laisse le zoom automatique
+                fig.update_geos(projection_scale=2)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            st.error(f"Erreur avec scatter_map : {e}")
-            # Fallback vers scatter_geo
-            st.warning("🔄 Utilisation du fallback scatter_geo")
-            fig = px.scatter_geo(
-                df_carte,
-                lat="latitude",
-                lon="longitude",
-                color="prix_m2",
-                size="surface_reelle_bati",
-                hover_name="type_local",
-                title=f"Transactions à {selected} (fallback)"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            st.error(f"Erreur lors de la création de la carte : {e}")
     else:
         st.info("📍 Aucune coordonnée valide pour afficher la carte.")
 else:
