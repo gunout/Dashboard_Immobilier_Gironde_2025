@@ -1,4 +1,4 @@
-# dashboard_gironde_2025.py – version finale avec scatter_geo
+# dashboard_gironde_2025.py – version finale avec carte colorée
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -149,7 +149,7 @@ with col2:
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte avec scatter_geo (robuste) ---
+# --- Carte avec scatter_map (couleurs) et fallback scatter_geo ---
 st.subheader(f"🗺️ Carte des transactions - {selected}")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
@@ -186,8 +186,37 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
 
-        # Création de la carte avec scatter_geo
-        try:
+        # Vérifier si les coordonnées sont en degrés (sinon on reste en scatter_geo)
+        use_scatter_map = (lat_min >= -90 and lat_max <= 90 and lon_min >= -180 and lon_max <= 180)
+
+        if use_scatter_map:
+            try:
+                # Essayer avec scatter_map (couleurs et fond de carte)
+                fig = px.scatter_map(
+                    df_carte,
+                    lat="latitude",
+                    lon="longitude",
+                    color="prix_m2",
+                    size="surface_reelle_bati",
+                    hover_data={
+                        "valeur_fonciere": ":.0f",
+                        "type_local": True,
+                        "surface_reelle_bati": ":.0f",
+                        "prix_m2": ":.0f"
+                    },
+                    color_continuous_scale="Viridis",
+                    size_max=15,
+                    zoom=12,
+                    map_style="carto-positron",
+                    title=f"Transactions à {selected} (2025)"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Erreur avec scatter_map, bascule vers scatter_geo : {e}")
+                use_scatter_map = False  # on force le fallback
+
+        if not use_scatter_map:
+            # Fallback scatter_geo avec couleurs forcées
             fig = px.scatter_geo(
                 df_carte,
                 lat="latitude",
@@ -200,11 +229,11 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                     "surface_reelle_bati": ":.0f",
                     "prix_m2": ":.0f"
                 },
-                color_continuous_scale="RdYlGn_r",
+                color_continuous_scale="Viridis",
                 size_max=15,
-                title=f"Transactions à {selected} (2025)"
+                title=f"Transactions à {selected} (2025) - mode géographique"
             )
-            # Centrer sur la France (si les coordonnées sont en degrés)
+            # Centrer sur la France
             if -10 < lon_min < 10 and 40 < lat_min < 50:
                 fig.update_geos(
                     center=dict(lon=(lon_min+lon_max)/2, lat=(lat_min+lat_max)/2),
@@ -213,11 +242,8 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
                     countrycolor="lightgray"
                 )
             else:
-                # Si coordonnées en mètres, on laisse le zoom automatique
                 fig.update_geos(projection_scale=2)
             st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Erreur lors de la création de la carte : {e}")
     else:
         st.info("📍 Aucune coordonnée valide pour afficher la carte.")
 else:
