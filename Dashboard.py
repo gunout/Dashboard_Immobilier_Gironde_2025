@@ -1,4 +1,4 @@
-# dashboard_gironde_2025.py – version Plotly 7 compatible
+# dashboard_gironde_2025.py – Version finale corrigée pour Plotly 7
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -20,13 +20,15 @@ COMMUNES_GIRONDE = {
 
 @st.cache_data(ttl=3600)
 def load_gironde_2025_data():
+    """Télécharge et charge uniquement les colonnes nécessaires depuis data.gouv.fr"""
     url = "https://files.data.gouv.fr/geo-dvf/latest/csv/2025/departements/33.csv.gz"
     try:
         with st.spinner("📥 Téléchargement 2025..."):
             response = requests.get(url, stream=True, timeout=60)
             response.raise_for_status()
-        with st.spinner("🔄 Décompression..."):
+        with st.spinner("🔄 Décompression et lecture..."):
             with gzip.open(io.BytesIO(response.content), 'rt', encoding='utf-8') as f:
+                # Lire l'en-tête pour sélectionner les colonnes existantes
                 first_line = f.readline()
                 header = first_line.strip().split(',')
                 f.seek(0)
@@ -35,7 +37,7 @@ def load_gironde_2025_data():
                           'latitude', 'longitude', 'nombre_pieces_principales']
                 use_cols = [c for c in needed if c in header]
                 if not use_cols:
-                    st.error("Colonnes requises absentes.")
+                    st.error("Aucune colonne requise trouvée.")
                     return pd.DataFrame()
                 df = pd.read_csv(f, sep=',', usecols=use_cols, low_memory=False)
         if df.empty:
@@ -48,6 +50,7 @@ def load_gironde_2025_data():
         return pd.DataFrame()
 
 def prepare_data(df):
+    """Nettoie et filtre les données"""
     if df.empty:
         return df
     df_clean = df.copy()
@@ -70,21 +73,23 @@ def prepare_data(df):
         df_clean = df_clean.dropna(subset=['nom_commune'])
     return df_clean
 
+# --- Interface utilisateur ---
 st.title("🏘️ Dashboard Immobilier Gironde - 2025")
 st.markdown("Source : data.gouv.fr / DVF")
 
 df_brut = load_gironde_2025_data()
 if df_brut.empty:
-    st.info("Données 2025 non disponibles ou erreur.")
+    st.info("Données 2025 non disponibles ou erreur. Réessayez plus tard.")
     if st.button("🔄 Réessayer"):
         st.rerun()
     st.stop()
 
 df = prepare_data(df_brut)
 if df.empty:
-    st.warning("Aucune transaction valide.")
+    st.warning("Aucune transaction valide après nettoyage.")
     st.stop()
 
+# --- Sélection commune ---
 communes = sorted(df['nom_commune'].unique())
 selected = st.sidebar.selectbox("Commune", communes, index=communes.index("Bordeaux") if "Bordeaux" in communes else 0)
 df_commune = df[df['nom_commune'] == selected].copy()
@@ -139,45 +144,74 @@ with col2:
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte (CORRIGÉE pour Plotly 7) ---
+# --- Carte avec auto-adaptation et fallback ---
 st.subheader(f"🗺️ Carte des transactions - {selected}")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
-    # Nettoyage des coordonnées
-    df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
-    df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
+    # Nettoyage agressif des coordonnées
+    df_carte['latitude'] = pd.to_numeric(
+        df_carte['latitude'].astype(str).str.strip().str.replace(',', '.'),
+        errors='coerce'
+    )
+    df_carte['longitude'] = pd.to_numeric(
+        df_carte['longitude'].astype(str).str.strip().str.replace(',', '.'),
+        errors='coerce'
+    )
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
 
     if not df_carte.empty:
+        # Diagnostic : afficher les plages de coordonnées
+        with st.expander("🔍 Voir les plages de coordonnées (diagnostic)"):
+            st.write(f"Latitude : min {df_carte['latitude'].min():.4f}, max {df_carte['latitude'].max():.4f}")
+            st.write(f"Longitude : min {df_carte['longitude'].min():.4f}, max {df_carte['longitude'].max():.4f}")
+            if (abs(df_carte['latitude'].min()) > 90 or abs(df_carte['latitude'].max()) > 90 or
+                abs(df_carte['longitude'].min()) > 180 or abs(df_carte['longitude'].max()) > 180):
+                st.warning("⚠️ Les coordonnées semblent être en mètres (projection). La carte peut être décalée.")
+
         if len(df_carte) > 500:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
 
-        # Utilisation de scatter_map (et non scatter_mapbox)
-        fig = px.scatter_map(
-            df_carte,
-            lat="latitude",
-            lon="longitude",
-            color="prix_m2",
-            size="surface_reelle_bati",
-            hover_data={
-                "valeur_fonciere": ":.0f",
-                "type_local": True,
-                "surface_reelle_bati": ":.0f",
-                "prix_m2": ":.0f"
-            },
-            color_continuous_scale="RdYlGn_r",
-            size_max=15,
-            zoom=12,
-            map_style="open-street-map",  # <-- nouveau nom
-            title=f"Transactions à {selected} (2025)"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        try:
+            # Essai avec scatter_map (Plotly 7)
+            fig = px.scatter_map(
+                df_carte,
+                lat="latitude",
+                lon="longitude",
+                color="prix_m2",
+                size="surface_reelle_bati",
+                hover_data={
+                    "valeur_fonciere": ":.0f",
+                    "type_local": True,
+                    "surface_reelle_bati": ":.0f",
+                    "prix_m2": ":.0f"
+                },
+                color_continuous_scale="RdYlGn_r",
+                size_max=15,
+                zoom=12,
+                map_style="carto-positron",
+                title=f"Transactions à {selected} (2025)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Erreur avec scatter_map : {e}")
+            # Fallback vers scatter_geo
+            st.warning("🔄 Utilisation du fallback scatter_geo")
+            fig = px.scatter_geo(
+                df_carte,
+                lat="latitude",
+                lon="longitude",
+                color="prix_m2",
+                size="surface_reelle_bati",
+                hover_name="type_local",
+                title=f"Transactions à {selected} (fallback)"
+            )
+            st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("📍 Aucune coordonnée valide.")
+        st.info("📍 Aucune coordonnée valide pour afficher la carte.")
 else:
-    st.info("📍 Colonnes latitude/longitude non disponibles.")
+    st.info("📍 Colonnes latitude/longitude non disponibles dans les données.")
 
 # --- Évolution temporelle ---
 if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
