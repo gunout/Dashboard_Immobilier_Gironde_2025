@@ -1,4 +1,4 @@
-# dashboard_gironde_2025.py (version corrigée pour Plotly 7)
+# dashboard_gironde_2025.py – version Plotly 7 compatible
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -91,7 +91,7 @@ df_commune = df[df['nom_commune'] == selected].copy()
 if df_commune.empty:
     st.stop()
 
-# Filtres
+# --- Filtres ---
 st.sidebar.header("🔧 Filtres")
 if 'code_postal' in df_commune.columns:
     cp_options = sorted(df_commune['code_postal'].astype(str).unique())
@@ -117,7 +117,7 @@ if df_filtre.empty:
     st.warning("Aucun résultat.")
     st.stop()
 
-# KPIs
+# --- KPIs ---
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Prix moyen / m²", f"{df_filtre['prix_m2'].mean():,.0f} €")
 c2.metric("Prix médian", f"{df_filtre['valeur_fonciere'].median():,.0f} €")
@@ -126,25 +126,25 @@ c4.metric("Surface moyenne", f"{df_filtre['surface_reelle_bati'].mean():.0f} m²
 if 'nombre_pieces_principales' in df_filtre.columns:
     c5.metric("Pièces", f"{df_filtre['nombre_pieces_principales'].mean():.1f}")
 
-# Graphiques
+# --- Graphiques ---
 col1, col2 = st.columns(2)
 with col1:
     fig = px.histogram(df_filtre, x='prix_m2', nbins=40,
                        color='type_local' if 'type_local' in df_filtre.columns else None,
                        marginal='box')
     st.plotly_chart(fig, use_container_width=True)
-
 with col2:
     fig = px.scatter(df_filtre, x='surface_reelle_bati', y='valeur_fonciere',
                      color='type_local' if 'type_local' in df_filtre.columns else None,
                      hover_data=['code_postal'])
     st.plotly_chart(fig, use_container_width=True)
 
-# --- Carte (corrigée avec px.scatter_map) ---
+# --- Carte (CORRIGÉE pour Plotly 7) ---
 st.subheader(f"🗺️ Carte des transactions - {selected}")
 
 if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
     df_carte = df_filtre.copy()
+    # Nettoyage des coordonnées
     df_carte['latitude'] = pd.to_numeric(df_carte['latitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte['longitude'] = pd.to_numeric(df_carte['longitude'].astype(str).str.replace(',', '.'), errors='coerce')
     df_carte = df_carte.dropna(subset=['latitude', 'longitude'])
@@ -154,6 +154,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             df_carte = df_carte.sample(500)
             st.caption(f"Affichage de 500 transactions sur {len(df_filtre)} (échantillon)")
 
+        # Utilisation de scatter_map (et non scatter_mapbox)
         fig = px.scatter_map(
             df_carte,
             lat="latitude",
@@ -169,7 +170,7 @@ if 'latitude' in df_filtre.columns and 'longitude' in df_filtre.columns:
             color_continuous_scale="RdYlGn_r",
             size_max=15,
             zoom=12,
-            map_style="open-street-map",   # au lieu de mapbox_style
+            map_style="open-street-map",  # <-- nouveau nom
             title=f"Transactions à {selected} (2025)"
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -188,7 +189,6 @@ if 'date_mutation' in df_filtre.columns and not df_filtre.empty:
     df_mensuel.columns = ['prix_m2_moyen', 'nb_transactions', 'prix_moyen']
     df_mensuel = df_mensuel.reset_index()
     df_mensuel['mois'] = df_mensuel['mois'].astype(str)
-
     col1, col2 = st.columns(2)
     with col1:
         fig = px.line(df_mensuel, x='mois', y='prix_m2_moyen', markers=True)
